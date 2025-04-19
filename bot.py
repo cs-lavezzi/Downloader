@@ -190,6 +190,11 @@ async def format_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
             ]
             reply_markup = InlineKeyboardMarkup(keyboard)
             await query.edit_message_text(LANGUAGES[user_lang]['choose_quality'], reply_markup=reply_markup)
+        elif format_type == 'image':
+            # Rasm uchun bevosita yuklab olish
+            status_message = await query.edit_message_text(LANGUAGES[user_lang]['download_image'])
+            context.user_data['status_message'] = status_message
+            await download_image(update, context, status_message)
         else:  # audio format
             # Audio uchun bevosita yuklab olish
             status_message = await query.edit_message_text(LANGUAGES[user_lang]['processing'])
@@ -206,6 +211,8 @@ async def format_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         
         if format_type == 'audio':
             await download_media(update, context, format_type='audio', quality='medium')
+        elif format_type == 'image':
+            await download_image(update, context, status_message)
         else:
             keyboard = [
                 [
@@ -241,15 +248,52 @@ async def quality_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         await download_media(update, context, format_type='video', quality=quality)
 
 async def download_image(update: Update, context: ContextTypes.DEFAULT_TYPE, status_message) -> None:
-    """Barcha platformalardan rasmlarni yuklab olish"""
+    """Faqat rasmlarni yuklab olish"""
     user_id = update.effective_user.id
     user_lang = user_languages.get(user_id, 'uz')
-    url = update.message.text
+    url = update.message.text if update.message else context.user_data.get('url')
+    
+    if not url:
+        await update_status_message(context, user_id, status_message, LANGUAGES[user_lang]['download_failed'])
+        return
     
     try:
-        # yt-dlp orqali rasm ma'lumotlarini olish
+        # Instagramda videolar bo'lmasin
+        if 'instagram.com' in url:
+            # Faqat rasm olish parametrlarini belgilaymiz
+            ydl_opts = {
+                'format': 'bestaudio/best',  # MP4 formatlarni olmaslik
+                'skip_download': True,  # Videoni yuklamaydi
+                'extract_flat': True,
+                'quiet': True,
+                'no_warnings': True,
+            }
+            
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                info = ydl.extract_info(url, download=False)
+                
+                # Rasmi bo'lsa
+                if info.get('thumbnails'):
+                    largest_thumb = max(info['thumbnails'], key=lambda x: x.get('width', 0) if x.get('width') else 0)
+                    image_url = largest_thumb.get('url')
+                    
+                    if image_url:
+                        try:
+                            img_response = requests.get(image_url)
+                            if img_response.status_code == 200:
+                                await context.bot.send_photo(
+                                    chat_id=user_id,
+                                    photo=BytesIO(img_response.content),
+                                    caption=f"📷 {info.get('title', 'Instagram image')}"
+                                )
+                                await update_status_message(context, user_id, status_message, LANGUAGES[user_lang]['download_complete'])
+                                return
+                        except Exception as e:
+                            logger.error(f"Error sending Instagram image: {e}")
+        
+        # Boshqa platformalar uchun umumiy rasm yuklab olish kodi
         ydl_opts = {
-            'format': 'best',
+            'format': 'bestaudio/best',  # Videoni qaytarmaslik uchun
             'quiet': True,
             'no_warnings': True,
             'extract_flat': True,
