@@ -1,3 +1,5 @@
+from io import BytesIO
+import requests
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
 
@@ -58,63 +60,12 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     # URL-ni context.user_data-ga saqlash
     context.user_data['url'] = url
     
-    # X/Twitter uchun maxsus holat
+    # X/Twitter uchun maxsus holat - to'g'ridan-to'g'ri yuklab berish
     if ('twitter.com' in url or 'x.com' in url) and '/status/' in url:
-        try:
-            # Aввал рaсм сифатида юклашга уриниб кўриш
-            status_message = await update.message.reply_text(LANGUAGES[user_lang]['processing'])
-            # Yt-dlp orqali rasm ma'lumotlarini olish
-            ydl_opts = {
-                'quiet': True,
-                'no_warnings': True,
-                'extract_flat': True,
-                'skip_download': True,
-            }
-            
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                info = ydl.extract_info(url, download=False)
-                
-                # Rasmlarni qidirish
-                has_images = False
-                if info.get('thumbnails'):
-                    for thumb in info['thumbnails']:
-                        # Video tumbnail emas, asosiy rasm ekanini tekshirish
-                        if thumb.get('url') and not ('tweet_video_thumb' in thumb['url'] or 'ext_tw_video_thumb' in thumb['url']):
-                            has_images = True
-                            break
-                
-                # Agar rasm topilsa, rasmlarni yuklash
-                if has_images:
-                    await status_message.edit_text(LANGUAGES[user_lang]['download_image'])
-                    await download_twitter_image(update, context, status_message)
-                    return
-                    
-                # Agar rasm topilmasa, bu ehtimol video
-                # Format tanlash (video yoki audio)
-                keyboard = [
-                    [
-                        InlineKeyboardButton(LANGUAGES[user_lang]['video'], callback_data="format_video"),
-                        InlineKeyboardButton(LANGUAGES[user_lang]['audio'], callback_data="format_audio")
-                    ]
-                ]
-                reply_markup = InlineKeyboardMarkup(keyboard)
-                await status_message.edit_text(LANGUAGES[user_lang]['choose_format'], reply_markup=reply_markup)
-                
-        except Exception as e:
-            logger.error(f"Error processing Twitter link: {e}")
-            # Xato yuz berganda, standart video tanlov
-            keyboard = [
-                [
-                    InlineKeyboardButton(LANGUAGES[user_lang]['video'], callback_data="format_video"),
-                    InlineKeyboardButton(LANGUAGES[user_lang]['audio'], callback_data="format_audio")
-                ]
-            ]
-            reply_markup = InlineKeyboardMarkup(keyboard)
-            await update.message.reply_text(LANGUAGES[user_lang]['choose_format'], reply_markup=reply_markup)
-        
+        status_message = await update.message.reply_text(LANGUAGES[user_lang]['downloading'])
+        await download_twitter_media(update, context, status_message)
         return
     
-    # Boshqa platformalar uchun standart ishlov
     # Instagram reels aniq video
     if 'instagram.com' in url and '/reel/' in url:
         keyboard = [
@@ -133,7 +84,7 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         await download_image(update, context, status_message)
         return
     
-    # Instagram postlar - aniqlab olish kerak
+    # Instagram posts - aniqlab olish kerak
     if 'instagram.com' in url and '/p/' in url:
         # Instagram havola turi aniqlab olish
         try:
@@ -191,6 +142,229 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
     await update.message.reply_text(LANGUAGES[user_lang]['choose_format'], reply_markup=reply_markup)
+
+async def download_twitter_media(update: Update, context: ContextTypes.DEFAULT_TYPE, status_message) -> None:
+    """X/Twitter media (rasm yoki video) yuklab olish"""
+    user_id = update.effective_user.id
+    user_lang = user_languages.get(user_id, 'uz')
+    url = context.user_data.get('url')
+    
+    if not url:
+        url = update.message.text
+    
+    try:
+        # 1. Avval media ma'lumotlarini olish (rasm yoki video ekanligini aniqlash uchun)
+        ydl_info_opts = {
+            'quiet': True,
+            'no_warnings': True,
+            'extract_flat': True,
+            'skip_download': True,
+        }
+        
+        with yt_dlp.YoutubeDL(ydl_info_opts) as ydl:
+            info = ydl.extract_info(url, download=False)
+            
+            # 2. Videoni tekshirish
+            has_video = False
+            if info.get('formats'):
+                for fmt in info.get('formats', []):
+                    if fmt.get('vcodec') != 'none':
+                        has_video = True
+                        break
+            
+            # 3. Videosi bor bo'lsa, yuqori sifatda yuklab olish
+            if has_video:
+                # Video yuklab olish
+                ydl_opts = {
+                    'quiet': True,
+                    'no_warnings': True,
+                    'format': 'best[ext=mp4]/best',
+                }
+                
+                # Vaqtinchalik fayl nomi
+                temp_file = f"temp_{user_id}_twitter_video"
+                ydl_opts['outtmpl'] = temp_file
+                
+                await status_message.edit_text(LANGUAGES[user_lang]['downloading'])
+                
+                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                    info = ydl.extract_info(url, download=True)
+                    file_path = ydl.prepare_filename(info)
+                    
+                    # Faylni tekshirish
+                    logger.info(f"Looking for file at: {file_path}")
+                    
+                    # Fayl mavjud emas bo'lsa, papkada qidirish
+                    if not os.path.exists(file_path):
+                        logger.info(f"File not found at expected path: {file_path}. Searching directory...")
+                        current_dir = os.getcwd()
+                        possible_files = [f for f in os.listdir(current_dir) if f.startswith(f"temp_{user_id}")]
+                        
+                        if possible_files:
+                            file_path = max(possible_files, key=lambda f: os.path.getmtime(os.path.join(current_dir, f)))
+                            file_path = os.path.join(current_dir, file_path)
+                            logger.info(f"Found alternative file: {file_path}")
+                    
+                    # Fayl mavjudligini tekshirish
+                    if not os.path.exists(file_path):
+                        # Video yuklab olishda muammo bo'lsa, rasm deb hisoblaymiz
+                        await status_message.edit_text(LANGUAGES[user_lang]['download_image'])
+                        await download_twitter_images(update, context, status_message, info)
+                        return
+                    
+                    # Videoni yuborish
+                    try:
+                        with open(file_path, 'rb') as file:
+                            await context.bot.send_video(
+                                chat_id=user_id,
+                                video=file,
+                                caption=f"🎬 {info.get('title', 'Twitter video')}",
+                                supports_streaming=True,
+                                width=info.get('width', 640),
+                                height=info.get('height', 360)
+                            )
+                    except Exception as video_error:
+                        logger.error(f"Failed to send Twitter video: {video_error}")
+                        # Dokument sifatida yuborish
+                        try:
+                            with open(file_path, 'rb') as file:
+                                await context.bot.send_document(
+                                    chat_id=user_id,
+                                    document=file,
+                                    caption=f"📁 {info.get('title', 'Twitter video')}"
+                                )
+                        except Exception as doc_error:
+                            logger.error(f"Error sending Twitter video as document: {doc_error}")
+                            # Rasmlarni yuborishga harakat qilish
+                            await download_twitter_images(update, context, status_message, info)
+                            return
+                    
+                    # Vaqtinchalik faylni o'chirish
+                    try:
+                        os.remove(file_path)
+                        logger.info(f"Removed temporary file: {file_path}")
+                    except Exception as e:
+                        logger.error(f"Error removing file: {e}")
+                    
+                    await status_message.edit_text(LANGUAGES[user_lang]['download_complete'])
+            else:
+                # 4. Video topilmasa, rasmlar mavjudligini tekshirish va yuklash
+                await status_message.edit_text(LANGUAGES[user_lang]['download_image'])
+                await download_twitter_images(update, context, status_message, info)
+    
+    except Exception as e:
+        error_str = str(e)
+        logger.error(f"Error downloading Twitter media: {e}")
+        
+        # "No video could be found in this tweet" xatoligi bo'lsa, rasmlarni yuborish
+        if 'No video could be found in this tweet' in error_str:
+            # Rasmlarni yuborish
+            await status_message.edit_text(LANGUAGES[user_lang]['download_image'])
+            await download_twitter_images(update, context, status_message, None)
+        else:
+            await status_message.edit_text(f"{LANGUAGES[user_lang]['download_failed']} Error: {str(e)}")
+
+
+async def download_twitter_images(update: Update, context: ContextTypes.DEFAULT_TYPE, status_message, info=None) -> None:
+    """X/Twitter rasmlarini yuklab olish"""
+    user_id = update.effective_user.id
+    user_lang = user_languages.get(user_id, 'uz')
+    url = context.user_data.get('url')
+    
+    if not url:
+        url = update.message.text
+    
+    try:
+        # Info mavjud bo'lmasa, olish kerak
+        if info is None:
+            ydl_opts = {
+                'quiet': True,
+                'no_warnings': True,
+                'extract_flat': True,
+                'skip_download': True,
+            }
+            
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                info = ydl.extract_info(url, download=False)
+        
+        images_sent = 0
+        
+        # Rasmlarni yuborish
+        if info.get('thumbnails'):
+            # Rasmlarni hajmi bo'yicha tartiblash
+            thumbnails = sorted(info['thumbnails'], 
+                              key=lambda x: x.get('width', 0) if x.get('width') else 0, 
+                              reverse=True)
+            
+            for thumb in thumbnails:
+                if thumb.get('url'):
+                    img_url = thumb['url']
+                    
+                    # Video rasmi emas, asosiy rasm ekanini tekshirish
+                    if 'tweet_video_thumb' in img_url or 'ext_tw_video_thumb' in img_url:
+                        continue
+                        
+                    try:
+                        img_response = requests.get(img_url)
+                        if img_response.status_code == 200:
+                            try:
+                                await context.bot.send_photo(
+                                    chat_id=user_id,
+                                    photo=BytesIO(img_response.content),
+                                    caption=f"📷 {info.get('title', 'Twitter image')}"
+                                )
+                                images_sent += 1
+                            except Exception as send_error:
+                                logger.error(f"Error sending Twitter image: {send_error}")
+                                # Dokument sifatida yuborish
+                                try:
+                                    await context.bot.send_document(
+                                        chat_id=user_id,
+                                        document=BytesIO(img_response.content),
+                                        filename=f"twitter_image_{images_sent+1}.jpg",
+                                        caption=f"📷 {info.get('title', 'Twitter image')}"
+                                    )
+                                    images_sent += 1
+                                except Exception as doc_error:
+                                    logger.error(f"Error sending Twitter image as document: {doc_error}")
+                    except Exception as e:
+                        logger.error(f"Error downloading Twitter image: {e}")
+        
+        # Entries bo'lsa (media gallery)
+        if images_sent == 0 and 'entries' in info and info['entries']:
+            for entry in info['entries']:
+                if entry.get('thumbnails'):
+                    try:
+                        largest_thumb = max(entry['thumbnails'], 
+                                         key=lambda x: x.get('width', 0) if x.get('width') else 0)
+                        
+                        if largest_thumb.get('url'):
+                            img_url = largest_thumb['url']
+                            # Video tumbnail emas, asosiy rasm ekanini tekshirish
+                            if 'tweet_video_thumb' in img_url or 'ext_tw_video_thumb' in img_url:
+                                continue
+                                
+                            img_response = requests.get(img_url)
+                            if img_response.status_code == 200:
+                                await context.bot.send_photo(
+                                    chat_id=user_id,
+                                    photo=BytesIO(img_response.content),
+                                    caption=f"📷 {entry.get('title', 'Twitter image')}"
+                                )
+                                images_sent += 1
+                    except Exception as e:
+                        logger.error(f"Error sending Twitter gallery image: {e}")
+        
+        # Hech qanday rasm topilmagan bo'lsa
+        if images_sent == 0:
+            await status_message.edit_text(f"{LANGUAGES[user_lang]['download_failed']} Error: No media found in tweet")
+            return
+        
+        await status_message.edit_text(LANGUAGES[user_lang]['download_complete'])
+        
+    except Exception as e:
+        logger.error(f"Error downloading Twitter images: {e}")
+        await status_message.edit_text(f"{LANGUAGES[user_lang]['download_failed']} Error: {str(e)}")
 
 
 async def detect_media_type(update: Update, context: ContextTypes.DEFAULT_TYPE, status_message) -> None:
