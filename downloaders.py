@@ -7,6 +7,7 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
 
 from config import LANGUAGES, user_languages
+from handlers import download_twitter_images, download_twitter_media
 from utils import update_status_message, logger
 
 
@@ -62,7 +63,7 @@ async def download_media(update: Update, context: ContextTypes.DEFAULT_TYPE, for
                     # Agar rasm topilsa va video yo'q bo'lsa, rasmlarni yuklash
                     if has_images and not is_video:
                         await status_message.edit_text(LANGUAGES[user_lang]['download_image'])
-                        await download_twitter_image(update, context, status_message)
+                        await download_twitter_images(update, context, status_message)
                         return
             except Exception as check_error:
                 logger.error(f"Error checking Twitter media type: {check_error}")
@@ -109,7 +110,7 @@ async def download_media(update: Update, context: ContextTypes.DEFAULT_TYPE, for
                 logger.warning(f"Twitter link is not a video, trying as image: {url}")
                 # Rasm sifatida yuklashga harakat qilish
                 await status_message.edit_text(LANGUAGES[user_lang]['download_image'])
-                await download_twitter_image(update, context, status_message)
+                await download_twitter_media(update, context, status_message)
                 return
             else:
                 # Boshqa xatoliklar
@@ -220,7 +221,7 @@ async def download_media(update: Update, context: ContextTypes.DEFAULT_TYPE, for
         if ('twitter.com' in url or 'x.com' in url) and 'No video could be found in this tweet' in str(e):
             # Rasm sifatida yuklab ko'rish
             await status_message.edit_text(LANGUAGES[user_lang]['download_image'])
-            await download_twitter_image(update, context, status_message)
+            await download_twitter_images(update, context, status_message)
         else:
             await update_status_message(context, user_id, status_message, f"{LANGUAGES[user_lang]['download_failed']} Error: {str(e)}")
 

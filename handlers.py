@@ -1,4 +1,5 @@
 from io import BytesIO
+import os
 import requests
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
