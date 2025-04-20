@@ -46,6 +46,7 @@ async def language_button(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     await query.edit_message_text(LANGUAGES[lang]['language_changed'])
 
 async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Havolalarni qabul qilish va qayta ishlash"""
     url = update.message.text
     user_id = update.effective_user.id
     user_lang = user_languages.get(user_id, 'uz')
@@ -57,16 +58,65 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     # URL-ni context.user_data-ga saqlash
     context.user_data['url'] = url
     
-    # X/Twitter havolasini tekshirish
+    # X/Twitter uchun maxsus holat
     if ('twitter.com' in url or 'x.com' in url) and '/status/' in url:
-        # Dastlab media turini aniqlash uchun yuklab ko'ramiz
-        status_message = await update.message.reply_text(LANGUAGES[user_lang]['processing'])
-        await detect_media_type(update, context, status_message)
+        try:
+            # Aввал рaсм сифатида юклашга уриниб кўриш
+            status_message = await update.message.reply_text(LANGUAGES[user_lang]['processing'])
+            # Yt-dlp orqali rasm ma'lumotlarini olish
+            ydl_opts = {
+                'quiet': True,
+                'no_warnings': True,
+                'extract_flat': True,
+                'skip_download': True,
+            }
+            
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                info = ydl.extract_info(url, download=False)
+                
+                # Rasmlarni qidirish
+                has_images = False
+                if info.get('thumbnails'):
+                    for thumb in info['thumbnails']:
+                        # Video tumbnail emas, asosiy rasm ekanini tekshirish
+                        if thumb.get('url') and not ('tweet_video_thumb' in thumb['url'] or 'ext_tw_video_thumb' in thumb['url']):
+                            has_images = True
+                            break
+                
+                # Agar rasm topilsa, rasmlarni yuklash
+                if has_images:
+                    await status_message.edit_text(LANGUAGES[user_lang]['download_image'])
+                    await download_twitter_image(update, context, status_message)
+                    return
+                    
+                # Agar rasm topilmasa, bu ehtimol video
+                # Format tanlash (video yoki audio)
+                keyboard = [
+                    [
+                        InlineKeyboardButton(LANGUAGES[user_lang]['video'], callback_data="format_video"),
+                        InlineKeyboardButton(LANGUAGES[user_lang]['audio'], callback_data="format_audio")
+                    ]
+                ]
+                reply_markup = InlineKeyboardMarkup(keyboard)
+                await status_message.edit_text(LANGUAGES[user_lang]['choose_format'], reply_markup=reply_markup)
+                
+        except Exception as e:
+            logger.error(f"Error processing Twitter link: {e}")
+            # Xato yuz berganda, standart video tanlov
+            keyboard = [
+                [
+                    InlineKeyboardButton(LANGUAGES[user_lang]['video'], callback_data="format_video"),
+                    InlineKeyboardButton(LANGUAGES[user_lang]['audio'], callback_data="format_audio")
+                ]
+            ]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            await update.message.reply_text(LANGUAGES[user_lang]['choose_format'], reply_markup=reply_markup)
+        
         return
     
-    # Instagram reels aniq video ekanini bilamiz
+    # Boshqa platformalar uchun standart ishlov
+    # Instagram reels aniq video
     if 'instagram.com' in url and '/reel/' in url:
-        # Format tanlash (video yoki audio)
         keyboard = [
             [
                 InlineKeyboardButton(LANGUAGES[user_lang]['video'], callback_data="format_video"),
@@ -77,19 +127,50 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         await update.message.reply_text(LANGUAGES[user_lang]['choose_format'], reply_markup=reply_markup)
         return
     
-    # Instagram posts - rasm yoki video bo'lishi mumkin
-    if 'instagram.com' in url and '/p/' in url:
-        status_message = await update.message.reply_text(LANGUAGES[user_lang]['processing'])
-        await detect_media_type(update, context, status_message)
-        return
-    
-    # Pinterest uchun tekshirish
+    # Pinterest postlar odatda rasm
     if 'pinterest.com' in url and '/pin/' in url:
-        status_message = await update.message.reply_text(LANGUAGES[user_lang]['processing'])
-        await detect_media_type(update, context, status_message)
+        status_message = await update.message.reply_text(LANGUAGES[user_lang]['download_image'])
+        await download_image(update, context, status_message)
         return
     
-    # YouTube va TikTok doim video
+    # Instagram postlar - aniqlab olish kerak
+    if 'instagram.com' in url and '/p/' in url:
+        # Instagram havola turi aniqlab olish
+        try:
+            ydl_opts = {
+                'quiet': True,
+                'no_warnings': True,
+                'skip_download': True,
+            }
+            
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                info = ydl.extract_info(url, download=False)
+                
+                # Video formatlar mavjud bo'lsa, video
+                if info.get('formats') and len(info.get('formats', [])) > 0:
+                    keyboard = [
+                        [
+                            InlineKeyboardButton(LANGUAGES[user_lang]['video'], callback_data="format_video"),
+                            InlineKeyboardButton(LANGUAGES[user_lang]['audio'], callback_data="format_audio")
+                        ]
+                    ]
+                    reply_markup = InlineKeyboardMarkup(keyboard)
+                    await update.message.reply_text(LANGUAGES[user_lang]['choose_format'], reply_markup=reply_markup)
+                    return
+                else:
+                    # Video formatlar topilmasa, rasm
+                    status_message = await update.message.reply_text(LANGUAGES[user_lang]['download_image'])
+                    await download_image(update, context, status_message)
+                    return
+                    
+        except Exception as e:
+            logger.error(f"Error detecting Instagram media type: {e}")
+            # Xato yuz berganda rasm deb olish
+            status_message = await update.message.reply_text(LANGUAGES[user_lang]['download_image'])
+            await download_image(update, context, status_message)
+            return
+    
+    # YouTube va TikTok aniq video
     if 'youtube.com' in url or 'youtu.be' in url or 'tiktok.com' in url:
         keyboard = [
             [
@@ -101,9 +182,16 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         await update.message.reply_text(LANGUAGES[user_lang]['choose_format'], reply_markup=reply_markup)
         return
     
-    # Boshqa barcha havolalar uchun turi aniqlanmagan, tekshirishga harakat qilamiz
-    status_message = await update.message.reply_text(LANGUAGES[user_lang]['processing'])
-    await detect_media_type(update, context, status_message)
+    # Boshqa barcha havolalar uchun video deb hisoblaymiz
+    keyboard = [
+        [
+            InlineKeyboardButton(LANGUAGES[user_lang]['video'], callback_data="format_video"),
+            InlineKeyboardButton(LANGUAGES[user_lang]['audio'], callback_data="format_audio")
+        ]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    await update.message.reply_text(LANGUAGES[user_lang]['choose_format'], reply_markup=reply_markup)
+
 
 async def detect_media_type(update: Update, context: ContextTypes.DEFAULT_TYPE, status_message) -> None:
     """Havola media turini (rasm yoki video) aniqlash"""
