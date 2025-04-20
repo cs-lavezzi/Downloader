@@ -1,11 +1,14 @@
 from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters
 
-from config import BOT_TOKEN
+from dotenv import load_dotenv
+import os
 from handlers import start, help_command, language_button, handle_url, format_button, quality_button
+
+load_dotenv()
 
 def main() -> None:
     # Bot tokenini o'rnating
-    TOKEN = "BOT_TOKEN"
+    TOKEN = os.getenv('BOT_TOKEN')
     
     # Applicationni yaratish
     application = Application.builder().token(TOKEN).build()

@@ -3,16 +3,16 @@ import logging
 import requests
 from io import BytesIO
 import yt_dlp
-from telegram import Update
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
 
-from config import LANGUAGES
+from config import LANGUAGES, user_languages
 from utils import update_status_message, logger
 
 async def download_media(update: Update, context: ContextTypes.DEFAULT_TYPE, format_type: str, quality: str) -> None:
     """Video va audiolarni yuklab olish"""
     user_id = update.callback_query.from_user.id
-    user_lang = LANGUAGES.user_languages.get(user_id, 'uz')
+    user_lang = user_languages.get(user_id, 'uz')
     url = context.user_data.get('url')
     status_message = context.user_data.get('status_message')
     
@@ -178,8 +178,11 @@ async def download_media(update: Update, context: ContextTypes.DEFAULT_TYPE, for
 async def download_image(update: Update, context: ContextTypes.DEFAULT_TYPE, status_message) -> None:
     """Rasmlarni yuklab olish funksiyasi"""
     user_id = update.effective_user.id
-    user_lang = LANGUAGES.user_languages.get(user_id, 'uz')
-    url = update.message.text
+    user_lang = user_languages.get(user_id, 'uz')
+    url = context.user_data.get('url')
+    
+    if not url:
+        url = update.message.text
     
     try:
         # yt-dlp orqali rasm ma'lumotlarini olish
@@ -197,64 +200,120 @@ async def download_image(update: Update, context: ContextTypes.DEFAULT_TYPE, sta
             # Rasmlarni yuborish
             images_sent = 0
             
-            # Thumbnails bo'lsa (ko'p platformalarda shu)
-            if info.get('thumbnails'):
-                # Eng katta rasmni topish
-                thumbnails = sorted(info['thumbnails'], 
-                                   key=lambda x: x.get('width', 0) if x.get('width') else 0, 
-                                   reverse=True)
-                
-                # Instagram postlari va Pinterest pinlari uchun eng katta rasmni yuborish
-                for thumb in thumbnails:
-                    if thumb.get('url'):
-                        try:
-                            img_response = requests.get(thumb['url'])
-                            if img_response.status_code == 200:
-                                await context.bot.send_photo(
-                                    chat_id=user_id,
-                                    photo=BytesIO(img_response.content),
-                                    caption=f"📷 {info.get('title', 'Image')}"
-                                )
-                                images_sent += 1
-                                # Faqat eng katta rasmni yuboramiz
-                                break
-                        except Exception as e:
-                            logger.error(f"Error sending image: {e}")
-                            continue
-            
-            # Entries bo'lsa (albom, bir nechta rasm)
-            if 'entries' in info and info['entries'] and images_sent == 0:
-                for entry in info['entries'][:5]:  # Birinchi 5 ta rasmni yuborish
-                    if entry.get('thumbnails'):
-                        try:
-                            largest_thumb = max(entry['thumbnails'], 
-                                              key=lambda x: x.get('width', 0) if x.get('width') else 0)
-                            
-                            if largest_thumb.get('url'):
-                                img_response = requests.get(largest_thumb['url'])
+            # X/Twitter rasmlarini ajratib olish
+            if ('twitter.com' in url or 'x.com' in url) and '/status/' in url:
+                if info.get('thumbnails'):
+                    # Twitter thumbnails - odatda tweet rasmlari
+                    thumbnails = sorted(info['thumbnails'], 
+                                      key=lambda x: x.get('width', 0) if x.get('width') else 0, 
+                                      reverse=True)
+                    
+                    for thumb in thumbnails:
+                        if thumb.get('url'):
+                            try:
+                                # X/Twitter rasmlarini filtrlash
+                                img_url = thumb['url']
+                                # Video tumbnail emas, asosiy rasm ekanini tekshirish
+                                # Videolarni filtrlash
+                                if 'tweet_video_thumb' in img_url or 'ext_tw_video_thumb' in img_url:
+                                    continue
+                                
+                                img_response = requests.get(img_url)
                                 if img_response.status_code == 200:
                                     await context.bot.send_photo(
                                         chat_id=user_id,
                                         photo=BytesIO(img_response.content),
-                                        caption=f"📷 {entry.get('title', 'Image')}"
+                                        caption=f"📷 {info.get('title', 'Twitter image')}"
                                     )
                                     images_sent += 1
-                        except Exception as e:
-                            logger.error(f"Error sending image from entry: {e}")
+                            except Exception as e:
+                                logger.error(f"Error sending Twitter image: {e}")
+                                continue
+                
+                # Entries bo'lsa (tweet media gallery)
+                if 'entries' in info and info['entries'] and images_sent == 0:
+                    for entry in info['entries']:
+                        if entry.get('thumbnails'):
+                            try:
+                                largest_thumb = max(entry['thumbnails'], 
+                                                  key=lambda x: x.get('width', 0) if x.get('width') else 0)
+                                
+                                if largest_thumb.get('url'):
+                                    img_url = largest_thumb['url']
+                                    # Video tumbnail emas, asosiy rasm ekanini tekshirish
+                                    if 'tweet_video_thumb' in img_url or 'ext_tw_video_thumb' in img_url:
+                                        continue
+                                        
+                                    img_response = requests.get(img_url)
+                                    if img_response.status_code == 200:
+                                        await context.bot.send_photo(
+                                            chat_id=user_id,
+                                            photo=BytesIO(img_response.content),
+                                            caption=f"📷 {entry.get('title', 'Twitter image')}"
+                                        )
+                                        images_sent += 1
+                            except Exception as e:
+                                logger.error(f"Error sending Twitter image from entry: {e}")
+            else:
+                # Boshqa platformalar uchun (Instagram, Pinterest va h.k)
+                if info.get('thumbnails'):
+                    # Eng katta rasmni topish
+                    thumbnails = sorted(info['thumbnails'], 
+                                       key=lambda x: x.get('width', 0) if x.get('width') else 0, 
+                                       reverse=True)
+                    
+                    for thumb in thumbnails:
+                        if thumb.get('url'):
+                            try:
+                                img_response = requests.get(thumb['url'])
+                                if img_response.status_code == 200:
+                                    await context.bot.send_photo(
+                                        chat_id=user_id,
+                                        photo=BytesIO(img_response.content),
+                                        caption=f"📷 {info.get('title', 'Image')}"
+                                    )
+                                    images_sent += 1
+                                    # Faqat eng katta rasmni yuboramiz (galereya bo'lsa)
+                                    break
+                            except Exception as e:
+                                logger.error(f"Error sending image: {e}")
+                                continue
+                
+                # Entries bo'lsa (albom, bir nechta rasm)
+                if 'entries' in info and info['entries'] and images_sent == 0:
+                    for entry in info['entries'][:5]:  # Birinchi 5 ta rasmni yuborish
+                        if entry.get('thumbnails'):
+                            try:
+                                largest_thumb = max(entry['thumbnails'], 
+                                                  key=lambda x: x.get('width', 0) if x.get('width') else 0)
+                                
+                                if largest_thumb.get('url'):
+                                    img_response = requests.get(largest_thumb['url'])
+                                    if img_response.status_code == 200:
+                                        await context.bot.send_photo(
+                                            chat_id=user_id,
+                                            photo=BytesIO(img_response.content),
+                                            caption=f"📷 {entry.get('title', 'Image')}"
+                                        )
+                                        images_sent += 1
+                            except Exception as e:
+                                logger.error(f"Error sending image from entry: {e}")
             
             # Hech qanday rasm topilmagan bo'lsa
             if images_sent == 0:
-                # Ehtimol bu video bo'lishi mumkin, video sifatida ko'rib ko'ring
-                await update_status_message(context, user_id, status_message, LANGUAGES[user_lang]['processing'], edit_only=True)
-                # URL-ni context.user_data-ga saqlash
-                context.user_data['url'] = url
-                context.user_data['status_message'] = status_message
-                await download_media(
-                    update=update._replace(callback_query=DummyCallbackQuery(user_id)), 
-                    context=context, 
-                    format_type='video', 
-                    quality='high'
-                )
+                # Ehtimol bu video bo'lishi mumkin
+                await update_status_message(context, user_id, status_message, 
+                                          LANGUAGES[user_lang]['choose_format'], edit_only=True)
+                
+                # Video/Audio formatini tanlash
+                keyboard = [
+                    [
+                        InlineKeyboardButton(LANGUAGES[user_lang]['video'], callback_data="format_video"),
+                        InlineKeyboardButton(LANGUAGES[user_lang]['audio'], callback_data="format_audio")
+                    ]
+                ]
+                reply_markup = InlineKeyboardMarkup(keyboard)
+                await status_message.edit_text(LANGUAGES[user_lang]['choose_format'], reply_markup=reply_markup)
                 return
                     
             await update_status_message(context, user_id, status_message, LANGUAGES[user_lang]['download_complete'])
